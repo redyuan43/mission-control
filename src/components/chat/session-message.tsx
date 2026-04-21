@@ -12,6 +12,9 @@ export type SessionTranscriptMessage = {
   role: 'user' | 'assistant' | 'system'
   parts: MessageContentPart[]
   timestamp?: string
+  clientId?: string
+  pendingStatus?: 'sending' | 'failed'
+  optimistic?: true
 }
 
 interface SessionMessageProps {
@@ -28,9 +31,16 @@ const ROLE_CONFIG = {
 export function SessionMessage({ message, showTimestamp }: SessionMessageProps) {
   const config = ROLE_CONFIG[message.role]
   const timeStr = message.timestamp ? formatTime(message.timestamp) : ''
+  const isSending = message.pendingStatus === 'sending'
+  const isFailed = message.pendingStatus === 'failed'
+  const stateBorderClass = isFailed
+    ? 'border-red-500/40'
+    : isSending
+      ? 'border-dashed border-l-muted-foreground/40 opacity-70'
+      : config.borderClass
 
   return (
-    <div className={`flex gap-0 border-l-2 ${config.borderClass} pl-3 py-1.5`}>
+    <div className={`flex gap-0 border-l-2 ${stateBorderClass} pl-3 py-1.5`}>
       {/* Timestamp gutter */}
       <div className="hidden w-16 flex-shrink-0 text-right sm:block">
         {showTimestamp && timeStr && (
@@ -50,6 +60,11 @@ export function SessionMessage({ message, showTimestamp }: SessionMessageProps) 
 
       {/* Content */}
       <div className="min-w-0 flex-1 space-y-1">
+        {isFailed && (
+          <div className="font-mono-tight text-[10px] uppercase tracking-wide text-red-400/80">
+            Send failed
+          </div>
+        )}
         {message.parts.map((part, idx) => (
           <PartRenderer key={idx} part={part} />
         ))}

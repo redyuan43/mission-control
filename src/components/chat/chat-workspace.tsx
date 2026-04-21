@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useCallback, useState, useRef } from 'react'
+import { useEffect, useCallback, useState, useRef, type Dispatch, type SetStateAction } from 'react'
 import { useMissionControl, type Conversation, type ChatAttachment } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { createClientLogger } from '@/lib/client-logger'
@@ -9,6 +9,11 @@ import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
 import { Button } from '@/components/ui/button'
 import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } from './session-message'
+import {
+  createOptimisticSessionMessage,
+  markOptimisticMessageFailed,
+  mergeSessionTranscriptMessages,
+} from './session-transcript-utils'
 import { getSessionKindLabel, SessionKindAvatar } from './session-kind-brand'
 import { TerminalView } from '@/components/terminal/terminal-view'
 import { SplitPaneLayout, type SplitPane } from '@/components/terminal/split-pane-layout'
@@ -52,6 +57,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   const [focusMode, setFocusMode] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [sessionTranscript, setSessionTranscript] = useState<SessionTranscriptMessage[]>([])
+  const [sessionOptimisticMessages, setSessionOptimisticMessages] = useState<SessionTranscriptMessage[]>([])
   const [sessionTranscriptLoading, setSessionTranscriptLoading] = useState(false)
   const [sessionTranscriptError, setSessionTranscriptError] = useState<string | null>(null)
   const [sessionReloadNonce, setSessionReloadNonce] = useState(0)
@@ -233,6 +239,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     const sessionMeta = selectedSession
     if (!sessionMeta) {
       setSessionTranscript([])
+      setSessionOptimisticMessages([])
       setSessionTranscriptError(null)
       return
     }
@@ -256,7 +263,15 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       })
       .then((data) => {
         if (cancelled) return
-        setSessionTranscript(Array.isArray(data?.messages) ? data.messages : [])
+        const nextServerMessages = Array.isArray(data?.messages) ? data.messages : []
+        setSessionTranscript(nextServerMessages)
+        setSessionOptimisticMessages((currentOptimisticMessages) => {
+          const merged = mergeSessionTranscriptMessages({
+            serverMessages: nextServerMessages,
+            optimisticMessages: currentOptimisticMessages,
+          })
+          return merged.remainingOptimisticMessages
+        })
       })
       .catch((err) => {
         if (cancelled) return
@@ -275,6 +290,11 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   const refreshSessionTranscript = useCallback(() => {
     setSessionReloadNonce((v) => v + 1)
   }, [])
+
+  const mergedSessionTranscript = mergeSessionTranscriptMessages({
+    serverMessages: sessionTranscript,
+    optimisticMessages: sessionOptimisticMessages,
+  }).mergedMessages
 
   const handleSaveSessionPreferences = useCallback(async (payload: {
     prefKey: string
@@ -315,7 +335,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   }, [activeConversation, conversations, setConversations])
 
   return (
-    <div className={`flex h-full flex-col bg-card ${focusMode ? 'fixed inset-0 z-50' : ''}`}>
+    <div className={`flex h-full min-h-0 flex-col bg-card ${focusMode ? 'fixed inset-0 z-50' : ''}`}>
       {/* Header */}
       <div className={`glass-strong flex h-12 flex-shrink-0 items-center justify-between border-b border-border px-4 ${focusMode ? 'h-10' : ''}`}>
         <div className="flex items-center gap-3">
@@ -392,7 +412,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       </div>
 
       {/* Body */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Conversations sidebar */}
         {showConversations && !focusMode && (
           <div className={`${isMobile ? 'w-full' : 'w-56 border-r border-border'} flex-shrink-0`}>
@@ -402,7 +422,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
 
         {/* Message area */}
         {(!isMobile || !showConversations) && (
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {/* Conversation header */}
             {activeConversation && splitPanes.length === 0 && (
               <div className="bg-surface-1 flex flex-shrink-0 items-center gap-2 border-b border-border/50 px-4 py-2">
@@ -494,9 +514,10 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
                   <SessionConversationView
                     key={selectedConversation.session.sessionId}
                     session={selectedConversation.session}
-                    messages={sessionTranscript}
+                    messages={mergedSessionTranscript}
                     loading={sessionTranscriptLoading}
                     error={sessionTranscriptError}
+                    setOptimisticMessages={setSessionOptimisticMessages}
                     onRefreshTranscript={refreshSessionTranscript}
                     onSavePreferences={handleSaveSessionPreferences}
                   />
@@ -527,6 +548,7 @@ function SessionConversationView({
   messages,
   loading,
   error,
+  setOptimisticMessages,
   onRefreshTranscript,
   onSavePreferences,
 }: {
@@ -534,6 +556,7 @@ function SessionConversationView({
   messages: SessionTranscriptMessage[]
   loading: boolean
   error: string | null
+  setOptimisticMessages: Dispatch<SetStateAction<SessionTranscriptMessage[]>>
   onRefreshTranscript: () => void
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
@@ -546,6 +569,7 @@ function SessionConversationView({
   const [continueBusy, setContinueBusy] = useState(false)
   const [continueError, setContinueError] = useState<string | null>(null)
   const [lastReply, setLastReply] = useState<string | null>(null)
+  const optimisticIdRef = useRef(0)
   const [nameDraft, setNameDraft] = useState(session.displayName || '')
   const [colorDraft, setColorDraft] = useState(session.colorTag || '')
   const [prefBusy, setPrefBusy] = useState(false)
@@ -568,7 +592,8 @@ function SessionConversationView({
     setPrefError(null)
     setContinueError(null)
     setLastReply(null)
-  }, [session.prefKey, session.displayName, session.colorTag])
+    setOptimisticMessages([])
+  }, [session.sessionId, session.sessionKind, session.displayName, session.colorTag, setOptimisticMessages])
 
   useEffect(() => {
     const container = transcriptScrollRef.current
@@ -580,9 +605,19 @@ function SessionConversationView({
     const prompt = continuePrompt.trim()
     if (!prompt || continueBusy) return
 
+    optimisticIdRef.current += 1
+    const optimisticClientId = `${session.sessionKind}:${session.sessionId}:${optimisticIdRef.current}`
+    const optimisticMessage = createOptimisticSessionMessage({
+      prompt,
+      clientId: optimisticClientId,
+    })
+
+    setOptimisticMessages((currentMessages) => [...currentMessages, optimisticMessage])
     setContinueBusy(true)
     setContinueError(null)
     setLastReply(null)
+    setContinuePrompt('')
+
     try {
       if (isGatewaySession) {
         // Gateway sessions: forward message to the agent via chat messages API
@@ -608,7 +643,6 @@ function SessionConversationView({
         if (fwd?.attempted && !fwd?.delivered) {
           setContinueError(`Message saved but not delivered: ${fwd.reason || 'unknown'}`)
         }
-        setContinuePrompt('')
         // Refresh transcript after a short delay to capture the response
         setTimeout(() => onRefreshTranscript(), 2000)
       } else {
@@ -625,13 +659,15 @@ function SessionConversationView({
         if (!res.ok) {
           throw new Error(data?.error || 'Failed to continue session')
         }
-        setContinuePrompt('')
         if (typeof data?.reply === 'string' && data.reply.trim()) {
           setLastReply(data.reply.trim())
         }
         onRefreshTranscript()
       }
     } catch (err) {
+      setOptimisticMessages((currentMessages) =>
+        markOptimisticMessageFailed(currentMessages, optimisticClientId),
+      )
       setContinueError(err instanceof Error ? err.message : 'Failed to continue session')
     } finally {
       setContinueBusy(false)
@@ -759,7 +795,7 @@ function SessionConversationView({
 
       {/* Transcript view */}
       {(!isPtyCapableKind || viewMode === 'transcript') && (
-        <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto font-mono-tight py-2">
+        <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-auto">
           {loading && (
             <div className="space-y-2 px-4">
               <div className="h-4 w-3/4 animate-pulse rounded bg-surface-1/60" />
@@ -777,10 +813,10 @@ function SessionConversationView({
             </div>
           )}
           {!loading && !error && messages.length > 0 && (
-            <div className="space-y-0">
+            <div className="min-w-0 space-y-0 py-2 font-mono-tight">
               {messages.map((msg, idx) => (
                 <SessionMessage
-                  key={`${msg.timestamp || 'no-ts'}-${idx}`}
+                  key={msg.clientId || `${msg.timestamp || 'no-ts'}-${idx}`}
                   message={msg}
                   showTimestamp={shouldShowTimestamp(msg, messages[idx - 1])}
                 />
@@ -819,7 +855,11 @@ function SessionConversationView({
         {continueError && <div className="mt-1 text-xs text-red-400">{continueError}</div>}
         {lastReply && (
           <div className="mt-2 border-l-2 border-primary/30 pl-3">
-            <div className="font-mono-tight text-xs leading-relaxed text-foreground whitespace-pre-wrap">{lastReply}</div>
+            <div className="min-h-0 max-h-56 overflow-y-auto rounded-r-md bg-black/10 px-3 py-2">
+              <div className="font-mono-tight text-xs leading-relaxed text-foreground whitespace-pre-wrap break-words">
+                {lastReply}
+              </div>
+            </div>
           </div>
         )}
       </div>

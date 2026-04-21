@@ -2,19 +2,35 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
+import { getDatabase } from '@/lib/db'
 import { logger } from '@/lib/logger'
 import { runCommand } from '@/lib/command'
 import { getOpenCodeExecutable } from '@/lib/opencode-sessions'
+import { withoutProxyEnv } from '@/lib/proxy-env'
 
-type ContinueKind = 'claude-code' | 'codex-cli' | 'opencode'
+type ContinueKind = 'claude-code' | 'codex-cli' | 'hermes' | 'opencode'
 
 function sanitizePrompt(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function getClaudeSessionWorkingDir(sessionId: string): string | undefined {
+  try {
+    const db = getDatabase()
+    const row = db.prepare(
+      'SELECT project_path FROM claude_sessions WHERE session_id = ? LIMIT 1'
+    ).get(sessionId) as { project_path?: string | null } | undefined
+    const projectPath = typeof row?.project_path === 'string' ? row.project_path.trim() : ''
+    return projectPath || undefined
+  } catch (error) {
+    logger.warn({ err: error, sessionId }, 'Failed to resolve Claude session working directory')
+    return undefined
+  }
+}
+
 /**
  * POST /api/sessions/continue
- * Body: { kind: 'claude-code'|'codex-cli'|'opencode', id: string, prompt: string }
+ * Body: { kind: 'claude-code'|'codex-cli'|'hermes'|'opencode', id: string, prompt: string }
  */
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
@@ -29,7 +45,7 @@ export async function POST(request: NextRequest) {
     if (!sessionId || !/^[a-zA-Z0-9._:-]+$/.test(sessionId)) {
       return NextResponse.json({ error: 'Invalid session id' }, { status: 400 })
     }
-    if (kind !== 'claude-code' && kind !== 'codex-cli' && kind !== 'opencode') {
+    if (kind !== 'claude-code' && kind !== 'codex-cli' && kind !== 'hermes' && kind !== 'opencode') {
       return NextResponse.json({ error: 'Invalid kind' }, { status: 400 })
     }
     if (!prompt || prompt.length > 6000) {
@@ -39,7 +55,9 @@ export async function POST(request: NextRequest) {
     let reply = ''
 
     if (kind === 'claude-code') {
+      const cwd = getClaudeSessionWorkingDir(sessionId)
       const result = await runCommand('claude', ['--print', '--resume', sessionId, prompt], {
+        cwd,
         timeoutMs: 180000,
       })
       reply = (result.stdout || '').trim() || (result.stderr || '').trim()
@@ -64,6 +82,12 @@ export async function POST(request: NextRequest) {
       } catch {
         // ignore
       }
+    } else if (kind === 'hermes') {
+      const result = await runCommand('hermes', ['--resume', sessionId, 'chat', '-q', prompt], {
+        timeoutMs: 180000,
+        env: withoutProxyEnv(process.env) as NodeJS.ProcessEnv,
+      })
+      reply = (result.stdout || '').trim() || (result.stderr || '').trim()
     } else {
       const result = await runCommand(getOpenCodeExecutable(), ['run', '--session', sessionId, prompt], {
         timeoutMs: 180000,
