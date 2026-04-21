@@ -3,6 +3,7 @@ import { requireRole } from '@/lib/auth'
 import { logger } from '@/lib/logger'
 import { config } from '@/lib/config'
 import { isHermesGatewayRunning } from '@/lib/hermes-sessions'
+import { withoutProxyEnv } from '@/lib/proxy-env'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -32,10 +33,11 @@ function startHermesGatewayDetached(hermesBin: string, homeDir: string): { pid: 
   try {
     // Open log file for append; route stdout and stderr into it
     const logFd = openSync(logPath, 'a')
+    const env = withoutProxyEnv(process.env, { HERMES_NONINTERACTIVE: '1', CI: '1' }) as NodeJS.ProcessEnv
     const child = spawn(hermesBin, ['gateway', 'run'], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, HERMES_NONINTERACTIVE: '1', CI: '1' },
+      env,
     })
 
     if (!child.pid) {
@@ -252,7 +254,7 @@ export async function POST(request: NextRequest) {
       // Bare metal: use the hermes CLI directly (systemd-managed service)
       const result = await runCommand(hermesBin, ['gateway', action], {
         timeoutMs: 15_000,
-        env: { ...process.env, HERMES_NONINTERACTIVE: '1', CI: '1' },
+        env: withoutProxyEnv(process.env, { HERMES_NONINTERACTIVE: '1', CI: '1' }) as NodeJS.ProcessEnv,
       })
 
       logger.info({ gateway, action, code: result.code }, 'Gateway control action executed')

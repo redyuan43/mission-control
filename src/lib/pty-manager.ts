@@ -8,6 +8,7 @@
 import { type IPty } from 'node-pty'
 import { execFileSync } from 'child_process'
 import { logger } from './logger'
+import { withoutProxyEnv } from './proxy-env'
 
 const log = logger.child({ module: 'pty-manager' })
 
@@ -67,7 +68,11 @@ class PtySession {
       cols: 120,
       rows: 30,
       cwd: process.env.HOME || '/',
-      env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+      env: (
+        this.kind === 'hermes'
+          ? withoutProxyEnv(process.env, { TERM: 'xterm-256color' })
+          : { ...process.env, TERM: 'xterm-256color' }
+      ) as NodeJS.ProcessEnv,
     })
 
     this.pty.onData((data: string) => {

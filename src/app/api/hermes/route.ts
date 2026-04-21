@@ -7,6 +7,7 @@ import { isHermesInstalled, isHermesGatewayRunning, scanHermesSessions } from '@
 import { getHermesTasks } from '@/lib/hermes-tasks'
 import { getHermesMemory } from '@/lib/hermes-memory'
 import { logger } from '@/lib/logger'
+import { withoutProxyEnv } from '@/lib/proxy-env'
 
 // In Docker, HOME=/nonexistent — check dataDir first, then homeDir
 import { resolve } from 'node:path'
@@ -143,11 +144,10 @@ export async function POST(request: NextRequest) {
       const hermesBin = join(HERMES_HOME, 'hermes-agent', 'venv', 'bin', 'hermes')
       const bin = existsSync(hermesBin) ? hermesBin : 'hermes'
       const HOME_DIR = existsSync(join(dataDir, '.hermes')) ? dataDir : homeDir
-      const baseEnv = {
-        ...process.env,
+      const baseEnv = withoutProxyEnv(process.env, {
         HOME: HOME_DIR,
         PATH: `${join(dataDir, '.local', 'bin')}:${process.env.PATH || ''}`,
-      }
+      }) as NodeJS.ProcessEnv
 
       try {
         const { runCommand } = require('@/lib/command')
@@ -269,13 +269,12 @@ export async function POST(request: NextRequest) {
       const args = parts.slice(1)
 
       // Add --non-interactive flags for commands that might prompt
-      const env = {
-        ...process.env,
+      const env = withoutProxyEnv(process.env, {
         HOME: existsSync(join(dataDir, '.hermes')) ? dataDir : homeDir,
         HERMES_NONINTERACTIVE: '1',
         CI: '1',
         PATH: `${join(dataDir, '.local', 'bin')}:${process.env.PATH || ''}`,
-      }
+      }) as NodeJS.ProcessEnv
 
       try {
         const { runCommand } = require('@/lib/command')
