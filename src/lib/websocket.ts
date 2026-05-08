@@ -525,6 +525,7 @@ export function useWebSocket() {
             content: msg.content,
             message_type: msg.message_type || 'text',
             metadata: msg.metadata,
+            attachments: Array.isArray(msg.attachments) ? msg.attachments : undefined,
             read_at: msg.read_at,
             created_at: msg.created_at || Math.floor(Date.now() / 1000),
           })

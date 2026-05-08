@@ -1,9 +1,9 @@
 'use client'
 
-import Image from 'next/image'
 import { useState } from 'react'
 import { ChatMessage } from '@/store'
 import { detectTextDirection } from '@/lib/chat-utils'
+import { ChatImagePreview } from './chat-image-preview'
 
 const AGENT_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   coordinator: { bg: 'bg-purple-500/10', text: 'text-purple-400', border: 'border-purple-500/20' },
@@ -238,15 +238,13 @@ export function MessageBubble({ message, isHuman, isGrouped }: MessageBubbleProp
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-1.5">
               {message.attachments.map((att, idx) => (
-                att.type.startsWith('image/') ? (
-                  <Image
+                att.type.startsWith('image/') && (att.dataUrl || att.url) ? (
+                  <ChatImagePreview
                     key={idx}
-                    src={att.dataUrl}
+                    src={att.dataUrl || att.url || ''}
                     alt={att.name}
-                    width={200}
-                    height={160}
-                    unoptimized
-                    className="max-w-[200px] max-h-[160px] rounded-md object-cover border border-border/30"
+                    caption={att.name}
+                    className="max-h-[160px] max-w-[200px] object-cover"
                   />
                 ) : (
                   <div key={idx} className="flex items-center gap-1.5 bg-black/20 rounded-md px-2 py-1 text-xs text-muted-foreground">
@@ -257,10 +255,12 @@ export function MessageBubble({ message, isHuman, isGrouped }: MessageBubbleProp
               ))}
             </div>
           )}
-          {isCommand ? (
-            <pre className="whitespace-pre-wrap">{message.content}</pre>
-          ) : (
-            <div className="whitespace-pre-wrap break-words" dir={detectTextDirection(message.content)}>{renderContent(message.content)}</div>
+          {message.content && (
+            isCommand ? (
+              <pre className="whitespace-pre-wrap">{message.content}</pre>
+            ) : (
+              <div className="whitespace-pre-wrap break-words" dir={detectTextDirection(message.content)}>{renderContent(message.content)}</div>
+            )
           )}
         </div>
       </div>

@@ -12,6 +12,7 @@ type MessageContentPart =
   | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: string }
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
+  | { type: 'image'; url?: string; dataUrl?: string; mimeType?: string; name?: string; alt?: string }
 
 type TranscriptMessage = {
   role: 'user' | 'assistant' | 'system'

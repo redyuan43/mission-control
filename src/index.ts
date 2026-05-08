@@ -185,6 +185,14 @@ export interface Comment {
   replies?: Comment[]
 }
 
+export interface ChatAttachment {
+  name: string
+  type: string
+  size: number
+  dataUrl?: string
+  url?: string
+}
+
 export interface ChatMessage {
   id: number
   conversation_id: string
@@ -193,6 +201,7 @@ export interface ChatMessage {
   content: string
   message_type: 'text' | 'system' | 'handoff' | 'status' | 'command'
   metadata?: any
+  attachments?: ChatAttachment[]
   read_at?: number
   created_at: number
   pendingStatus?: 'sending' | 'sent' | 'failed'

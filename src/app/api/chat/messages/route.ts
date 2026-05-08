@@ -8,6 +8,12 @@ import { logger } from '@/lib/logger'
 import { scanForInjection, sanitizeForPrompt } from '@/lib/injection-guard'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { resolveCoordinatorDeliveryTarget } from '@/lib/coordinator-routing'
+import {
+  mergeMetadataWithAttachments,
+  normalizeChatAttachments,
+  splitAttachmentsFromMetadata,
+  type ChatAttachmentPayload,
+} from '@/lib/chat-attachments'
 
 type ForwardInfo = {
   attempted: boolean
@@ -27,6 +33,7 @@ type ToolEvent = {
 type ChatAttachmentInput = {
   name?: string
   type?: string
+  size?: number
   dataUrl?: string
 }
 
@@ -76,6 +83,21 @@ function safeParseMetadata(raw: string | null | undefined): any | null {
   }
 }
 
+function hydrateMessage(message: Message, extraMetadata: Record<string, unknown> | null = null) {
+  const parsedMetadata = safeParseMetadata(message.metadata)
+  const { attachments, metadata } = splitAttachmentsFromMetadata(parsedMetadata)
+  const mergedMetadata = {
+    ...(metadata || {}),
+    ...(extraMetadata || {}),
+  }
+
+  return {
+    ...message,
+    attachments: attachments.length > 0 ? attachments : undefined,
+    metadata: Object.keys(mergedMetadata).length > 0 ? mergedMetadata : null,
+  }
+}
+
 function createChatReply(
   db: ReturnType<typeof getDatabase>,
   workspaceId: number,
@@ -105,10 +127,7 @@ function createChatReply(
     .prepare('SELECT * FROM messages WHERE id = ? AND workspace_id = ?')
     .get(replyInsert.lastInsertRowid, workspaceId) as Message
 
-  eventBus.broadcast('chat.message', {
-    ...row,
-    metadata: safeParseMetadata(row.metadata),
-  })
+  eventBus.broadcast('chat.message', hydrateMessage(row))
 }
 
 function extractReplyText(waitPayload: any): string | null {
@@ -238,6 +257,86 @@ function extractToolEvents(waitPayload: any): ToolEvent[] {
   return events
 }
 
+function extractStructuredImageAttachments(waitPayload: any): ChatAttachmentPayload[] {
+  const attachments: ChatAttachmentPayload[] = []
+
+  const pushImage = (candidate: any) => {
+    if (!candidate || typeof candidate !== 'object') return
+
+    const url = typeof candidate.url === 'string'
+      ? candidate.url
+      : typeof candidate.image_url?.url === 'string'
+        ? candidate.image_url.url
+        : typeof candidate.source?.url === 'string'
+          ? candidate.source.url
+          : ''
+    const base64Data = typeof candidate.data === 'string'
+      ? candidate.data
+      : typeof candidate.source?.data === 'string'
+        ? candidate.source.data
+        : ''
+    const mimeType = typeof candidate.mimeType === 'string'
+      ? candidate.mimeType
+      : typeof candidate.mime_type === 'string'
+        ? candidate.mime_type
+        : typeof candidate.media_type === 'string'
+          ? candidate.media_type
+          : typeof candidate.source?.media_type === 'string'
+            ? candidate.source.media_type
+            : 'image/png'
+    const name = typeof candidate.name === 'string'
+      ? candidate.name
+      : typeof candidate.fileName === 'string'
+        ? candidate.fileName
+        : 'generated-image'
+
+    let dataUrl = ''
+    if (base64Data && mimeType.startsWith('image/')) {
+      dataUrl = `data:${mimeType};base64,${base64Data}`
+    } else if (url && /^data:image\/[^;]+;base64,/i.test(url)) {
+      dataUrl = url
+    }
+
+    if (!dataUrl && !url) return
+
+    attachments.push({
+      name,
+      type: mimeType,
+      size: 0,
+      dataUrl: dataUrl || undefined,
+      url: !dataUrl ? url : undefined,
+    })
+  }
+
+  const visit = (value: any) => {
+    if (!value) return
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item)
+      return
+    }
+    if (typeof value !== 'object') return
+
+    const itemType = String(value.type || '').toLowerCase()
+    if (
+      itemType === 'image' ||
+      itemType === 'output_image' ||
+      itemType === 'input_image' ||
+      itemType === 'image_url'
+    ) {
+      pushImage(value)
+    }
+
+    if (Array.isArray(value.content)) visit(value.content)
+    if (Array.isArray(value.output)) visit(value.output)
+    if (Array.isArray(value.attachments)) visit(value.attachments)
+  }
+
+  visit(waitPayload?.output)
+  visit(waitPayload?.attachments)
+
+  return normalizeChatAttachments(attachments)
+}
+
 /**
  * GET /api/chat/messages - List messages with filters
  * Query params: conversation_id, from_agent, to_agent, limit, offset, since
@@ -286,10 +385,7 @@ export async function GET(request: NextRequest) {
 
     const messages = db.prepare(query).all(...params) as Message[]
 
-    const parsed = messages.map((msg) => ({
-      ...msg,
-      metadata: safeParseMetadata(msg.metadata),
-    }))
+    const parsed = messages.map((msg) => hydrateMessage(msg))
 
     // Get total count for pagination
     let countQuery = 'SELECT COUNT(*) as total FROM messages WHERE workspace_id = ?'
@@ -342,17 +438,18 @@ export async function POST(request: NextRequest) {
     const content = (body.content || '').trim()
     const message_type = body.message_type || 'text'
     const conversation_id = body.conversation_id || `conv_${Date.now()}`
-    const metadata = body.metadata || null
+    const attachments = normalizeChatAttachments(body.attachments)
+    const metadata = mergeMetadataWithAttachments(body.metadata || null, attachments)
 
-    if (!content) {
+    if (!content && attachments.length === 0) {
       return NextResponse.json(
-        { error: '"content" is required' },
+        { error: '"content" is required unless attachments are provided' },
         { status: 400 }
       )
     }
 
     // Scan content for injection when it will be forwarded to an agent
-    if (body.forward && to) {
+    if (body.forward && to && content) {
       const injectionReport = scanForInjection(content, { context: 'prompt' })
       if (!injectionReport.safe) {
         const criticals = injectionReport.matches.filter(m => m.severity === 'critical')
@@ -402,7 +499,9 @@ export async function POST(request: NextRequest) {
         to,
         'chat_message',
         `Message from ${from}`,
-        content.substring(0, 200) + (content.length > 200 ? '...' : ''),
+        content
+          ? content.substring(0, 200) + (content.length > 200 ? '...' : '')
+          : `${attachments.length} image attachment${attachments.length === 1 ? '' : 's'}`,
         'message',
         messageId,
         workspaceId
@@ -509,9 +608,10 @@ export async function POST(request: NextRequest) {
               }
             } else {
               const invokeParams: any = {
-                message: `Message from ${from}: ${content}`,
+                message: content ? `Message from ${from}: ${content}` : `Message from ${from} with ${attachments.length} image attachment${attachments.length === 1 ? '' : 's'}`,
                 idempotencyKey,
                 deliver: false,
+                attachments: toGatewayAttachments(attachments),
               }
               invokeParams.agentId = openclawAgentId
 
@@ -662,6 +762,7 @@ export async function POST(request: NextRequest) {
                   )
                 } else {
                   const replyText = extractReplyText(waitPayload)
+                  const replyAttachments = extractStructuredImageAttachments(waitPayload)
                   if (replyText) {
                     createChatReply(
                       db,
@@ -671,7 +772,24 @@ export async function POST(request: NextRequest) {
                       from,
                       replyText,
                       'text',
-                      { status: waitStatus || 'completed', runId: forwardInfo.runId }
+                      mergeMetadataWithAttachments(
+                        { status: waitStatus || 'completed', runId: forwardInfo.runId },
+                        replyAttachments,
+                      )
+                    )
+                  } else if (replyAttachments.length > 0) {
+                    createChatReply(
+                      db,
+                      workspaceId,
+                      conversation_id,
+                      COORDINATOR_AGENT,
+                      from,
+                      'Generated image',
+                      'text',
+                      mergeMetadataWithAttachments(
+                        { status: waitStatus || 'completed', runId: forwardInfo.runId },
+                        replyAttachments,
+                      )
                     )
                   } else {
                     createChatReply(
@@ -713,13 +831,10 @@ export async function POST(request: NextRequest) {
     }
 
     const created = db.prepare('SELECT * FROM messages WHERE id = ? AND workspace_id = ?').get(messageId, workspaceId) as Message
-    const parsedMessage = {
-      ...created,
-      metadata: {
-        ...(safeParseMetadata(created.metadata) || {}),
-        forwardInfo: forwardInfo || undefined,
-      },
-    }
+    const parsedMessage = hydrateMessage(
+      created,
+      forwardInfo ? { forwardInfo } : null,
+    )
 
     // Broadcast to SSE clients
     eventBus.broadcast('chat.message', parsedMessage)

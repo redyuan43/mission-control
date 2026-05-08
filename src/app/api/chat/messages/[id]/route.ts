@@ -2,6 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDatabase, Message } from '@/lib/db'
 import { requireRole } from '@/lib/auth'
 import { logger } from '@/lib/logger'
+import { splitAttachmentsFromMetadata } from '@/lib/chat-attachments'
+
+function serializeMessage(message: Message) {
+  const parsedMetadata = message.metadata ? JSON.parse(message.metadata) : null
+  const { attachments, metadata } = splitAttachmentsFromMetadata(parsedMetadata)
+
+  return {
+    ...message,
+    attachments: attachments.length > 0 ? attachments : undefined,
+    metadata,
+  }
+}
 
 /**
  * GET /api/chat/messages/[id] - Get a single message
@@ -27,10 +39,7 @@ export async function GET(
     }
 
     return NextResponse.json({
-      message: {
-        ...message,
-        metadata: message.metadata ? JSON.parse(message.metadata) : null
-      }
+      message: serializeMessage(message)
     })
   } catch (error) {
     logger.error({ err: error }, 'GET /api/chat/messages/[id] error')
@@ -72,10 +81,7 @@ export async function PATCH(
       .get(parseInt(id), workspaceId) as Message
 
     return NextResponse.json({
-      message: {
-        ...updated,
-        metadata: updated.metadata ? JSON.parse(updated.metadata) : null
-      }
+      message: serializeMessage(updated)
     })
   } catch (error) {
     logger.error({ err: error }, 'PATCH /api/chat/messages/[id] error')

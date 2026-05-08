@@ -76,4 +76,39 @@ describe('session-transcript-utils', () => {
     expect(result[0]?.pendingStatus).toBe('failed')
     expect(result[0]?.clientId).toBe('failed-one')
   })
+
+  it('纯图片 optimistic 消息在 transcript 回来后也会正确去重', () => {
+    const optimisticMessages: SessionTranscriptMessage[] = [{
+      role: 'user',
+      timestamp: '2026-04-21T10:06:00.000Z',
+      clientId: 'image-only',
+      pendingStatus: 'sending',
+      optimistic: true,
+      parts: [{
+        type: 'image',
+        dataUrl: 'data:image/png;base64,abcd',
+        mimeType: 'image/png',
+        name: 'generated.png',
+      }],
+    }]
+
+    const serverMessages: SessionTranscriptMessage[] = [{
+      role: 'user',
+      timestamp: '2026-04-21T10:06:01.000Z',
+      parts: [{
+        type: 'image',
+        dataUrl: 'data:image/png;base64,abcd',
+        mimeType: 'image/png',
+        name: 'generated.png',
+      }],
+    }]
+
+    const result = mergeSessionTranscriptMessages({
+      serverMessages,
+      optimisticMessages,
+    })
+
+    expect(result.remainingOptimisticMessages).toHaveLength(0)
+    expect(result.mergedMessages).toHaveLength(1)
+  })
 })

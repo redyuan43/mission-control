@@ -1,12 +1,14 @@
 'use client'
 
 import { useState } from 'react'
+import { ChatImagePreview } from './chat-image-preview'
 
 type MessageContentPart =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: string }
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
+  | { type: 'image'; url?: string; dataUrl?: string; mimeType?: string; name?: string; alt?: string }
 
 export type SessionTranscriptMessage = {
   role: 'user' | 'assistant' | 'system'
@@ -83,6 +85,8 @@ function PartRenderer({ part }: { part: MessageContentPart }) {
       return <ToolUsePart name={part.name} input={part.input} />
     case 'tool_result':
       return <ToolResultPart content={part.content} isError={part.isError} />
+    case 'image':
+      return <ImagePart {...part} />
     default:
       return null
   }
@@ -136,6 +140,32 @@ function ToolResultPart({ content, isError }: { content: string; isError?: boole
         </pre>
       </div>
     </details>
+  )
+}
+
+function ImagePart({
+  url,
+  dataUrl,
+  name,
+  alt,
+}: {
+  url?: string
+  dataUrl?: string
+  name?: string
+  alt?: string
+}) {
+  const src = dataUrl || url
+  if (!src) return null
+
+  return (
+    <div className="pt-1">
+      <ChatImagePreview
+        src={src}
+        alt={alt || name || 'Generated image'}
+        caption={name}
+        className="max-h-[220px] max-w-[280px] object-cover"
+      />
+    </div>
   )
 }
 

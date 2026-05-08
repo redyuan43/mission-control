@@ -86,6 +86,21 @@ function partToEvent(
       return { id, ts, sessionKey, agentName, role, type: 'tool_use', content: part.name, metadata: { toolId: part.id, input: part.input } }
     case 'tool_result':
       return { id, ts, sessionKey, agentName, role, type: 'tool_result', content: part.content.slice(0, 500), metadata: { toolUseId: part.toolUseId, isError: part.isError } }
+    case 'image':
+      return {
+        id,
+        ts,
+        sessionKey,
+        agentName,
+        role,
+        type: 'image',
+        content: part.name || part.alt || part.url || '[image]',
+        metadata: {
+          url: part.url,
+          dataUrl: part.dataUrl,
+          mimeType: part.mimeType,
+        },
+      }
   }
 }
 

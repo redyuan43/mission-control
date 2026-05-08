@@ -6,6 +6,7 @@ export type MessageContentPart =
   | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: string }
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
+  | { type: 'image'; url?: string; dataUrl?: string; mimeType?: string; name?: string; alt?: string }
 
 export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'system'
@@ -58,10 +59,59 @@ function parseTranscriptParts(content: unknown): MessageContentPart[] {
           isError: block.is_error === true,
         })
       }
+    } else {
+      const imagePart = parseTranscriptImagePart(block)
+      if (imagePart) parts.push(imagePart)
     }
   }
 
   return parts
+}
+
+function parseTranscriptImagePart(block: any): MessageContentPart | null {
+  if (!block || typeof block !== 'object') return null
+
+  const type = String(block.type || '').toLowerCase()
+  if (!['image', 'image_url', 'input_image', 'output_image'].includes(type)) {
+    return null
+  }
+
+  const directUrl = typeof block.url === 'string'
+    ? block.url
+    : typeof block.image_url?.url === 'string'
+      ? block.image_url.url
+      : typeof block.source?.url === 'string'
+        ? block.source.url
+        : ''
+  const mimeType = typeof block.mimeType === 'string'
+    ? block.mimeType
+    : typeof block.mime_type === 'string'
+      ? block.mime_type
+      : typeof block.source?.media_type === 'string'
+        ? block.source.media_type
+        : 'image/png'
+  const base64Data = typeof block.data === 'string'
+    ? block.data
+    : typeof block.source?.data === 'string'
+      ? block.source.data
+      : ''
+  const dataUrl = base64Data && mimeType.startsWith('image/')
+    ? `data:${mimeType};base64,${base64Data}`
+    : directUrl.startsWith('data:image/')
+      ? directUrl
+      : undefined
+  const url = dataUrl ? undefined : (directUrl || undefined)
+
+  if (!dataUrl && !url) return null
+
+  return {
+    type: 'image',
+    dataUrl,
+    url,
+    mimeType,
+    name: typeof block.name === 'string' ? block.name : typeof block.fileName === 'string' ? block.fileName : undefined,
+    alt: typeof block.alt === 'string' ? block.alt : undefined,
+  }
 }
 
 function normalizeTranscriptMessage(msg: any, timestamp?: string): TranscriptMessage | null {
@@ -70,8 +120,19 @@ function normalizeTranscriptMessage(msg: any, timestamp?: string): TranscriptMes
     : 'user' as const
 
   const parts = parseTranscriptParts(msg?.content ?? msg?.text)
-  if (parts.length === 0) return null
-  return { role, parts, timestamp }
+  const attachmentParts = Array.isArray(msg?.attachments)
+    ? parseTranscriptParts(msg.attachments.map((attachment: any) => ({
+        type: 'image',
+        url: attachment?.url || attachment?.dataUrl,
+        data: attachment?.data,
+        mimeType: attachment?.mimeType || attachment?.type,
+        name: attachment?.name || attachment?.fileName,
+        source: attachment?.source,
+      })))
+    : []
+  const combinedParts = [...parts, ...attachmentParts]
+  if (combinedParts.length === 0) return null
+  return { role, parts: combinedParts, timestamp }
 }
 
 /**

@@ -1,9 +1,10 @@
 'use client'
 
-import Image from 'next/image'
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { useMissionControl, type ChatAttachment } from '@/store'
 import { Button } from '@/components/ui/button'
+import { ChatImagePreview } from './chat-image-preview'
+import { useChatAttachments } from './use-chat-attachments'
 
 interface ChatInputProps {
   onSend: (content: string, attachments?: ChatAttachment[]) => void
@@ -16,12 +17,21 @@ interface ChatInputProps {
 export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating }: ChatInputProps) {
   const { chatInput, setChatInput, isSendingMessage } = useMissionControl()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
   const [mentionIndex, setMentionIndex] = useState(0)
-  const [attachments, setAttachments] = useState<ChatAttachment[]>([])
-  const [isDragOver, setIsDragOver] = useState(false)
+  const {
+    addFiles,
+    attachments,
+    clearAttachments,
+    fileInputRef,
+    isDragOver,
+    handleDragLeave,
+    handleDragOver,
+    handleDrop,
+    handlePaste,
+    removeAttachment,
+  } = useChatAttachments()
 
   const filteredAgents = agents.filter(a =>
     a.name.toLowerCase().includes(mentionFilter.toLowerCase())
@@ -45,64 +55,6 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
       textareaRef.current?.focus()
     }
   }, [disabled])
-
-  const addFiles = useCallback((files: FileList | File[]) => {
-    const fileArray = Array.from(files)
-    for (const file of fileArray) {
-      if (file.size > 10 * 1024 * 1024) continue // Skip files > 10MB
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        setAttachments(prev => [...prev, {
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          dataUrl,
-        }])
-      }
-      reader.readAsDataURL(file)
-    }
-  }, [])
-
-  const removeAttachment = useCallback((index: number) => {
-    setAttachments(prev => prev.filter((_, i) => i !== index))
-  }, [])
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragOver(true)
-  }, [])
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragOver(false)
-  }, [])
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragOver(false)
-    if (e.dataTransfer.files.length > 0) {
-      addFiles(e.dataTransfer.files)
-    }
-  }, [addFiles])
-
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-
-    const imageItems: File[] = []
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith('image/')) {
-        const file = items[i].getAsFile()
-        if (file) imageItems.push(file)
-      }
-    }
-
-    if (imageItems.length > 0) {
-      e.preventDefault()
-      addFiles(imageItems)
-    }
-  }, [addFiles])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (showMentions) {
@@ -177,7 +129,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
     if ((!trimmed && attachments.length === 0) || disabled || isSendingMessage) return
     onSend(trimmed, attachments.length > 0 ? attachments : undefined)
     setChatInput('')
-    setAttachments([])
+    clearAttachments()
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
@@ -228,13 +180,10 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
           {attachments.map((att, idx) => (
             <div key={idx} className="relative group rounded-md border border-border/60 bg-surface-1 overflow-hidden">
               {att.type.startsWith('image/') ? (
-                <Image
-                  src={att.dataUrl}
+                <ChatImagePreview
+                  src={att.dataUrl || att.url || ''}
                   alt={att.name}
-                  width={64}
-                  height={64}
-                  unoptimized
-                  className="h-16 w-16 object-cover"
+                  caption={att.name}
                 />
               ) : (
                 <div className="h-16 w-16 flex flex-col items-center justify-center px-1">
@@ -281,6 +230,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
           ref={fileInputRef}
           type="file"
           multiple
+          accept="image/*"
           className="hidden"
           onChange={(e) => {
             if (e.target.files) addFiles(e.target.files)

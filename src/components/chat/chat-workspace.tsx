@@ -9,6 +9,7 @@ import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
 import { Button } from '@/components/ui/button'
 import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } from './session-message'
+import { ChatImagePreview } from './chat-image-preview'
 import {
   createOptimisticSessionMessage,
   markOptimisticMessageFailed,
@@ -17,6 +18,7 @@ import {
 import { getSessionKindLabel, SessionKindAvatar } from './session-kind-brand'
 import { TerminalView } from '@/components/terminal/terminal-view'
 import { SplitPaneLayout, type SplitPane } from '@/components/terminal/split-pane-layout'
+import { useChatAttachments } from './use-chat-attachments'
 
 const log = createClientLogger('ChatWorkspace')
 
@@ -579,6 +581,18 @@ function SessionConversationView({
   const [continueError, setContinueError] = useState<string | null>(null)
   const [lastReply, setLastReply] = useState<string | null>(null)
   const optimisticIdRef = useRef(0)
+  const {
+    addFiles,
+    attachments: continueAttachments,
+    clearAttachments,
+    fileInputRef,
+    isDragOver,
+    handleDragLeave,
+    handleDragOver,
+    handleDrop,
+    handlePaste,
+    removeAttachment,
+  } = useChatAttachments()
   const [nameDraft, setNameDraft] = useState(session.displayName || '')
   const [colorDraft, setColorDraft] = useState(session.colorTag || '')
   const [prefBusy, setPrefBusy] = useState(false)
@@ -601,8 +615,9 @@ function SessionConversationView({
     setPrefError(null)
     setContinueError(null)
     setLastReply(null)
+    clearAttachments()
     setOptimisticMessages([])
-  }, [session.sessionId, session.sessionKind, session.prefKey, session.displayName, session.colorTag, setOptimisticMessages])
+  }, [session.sessionId, session.sessionKind, session.prefKey, session.displayName, session.colorTag, clearAttachments, setOptimisticMessages])
 
   useEffect(() => {
     const container = transcriptScrollRef.current
@@ -612,13 +627,14 @@ function SessionConversationView({
 
   const handleContinueSession = async () => {
     const prompt = continuePrompt.trim()
-    if (!prompt || continueBusy) return
+    if ((!prompt && continueAttachments.length === 0) || continueBusy) return
 
     optimisticIdRef.current += 1
     const optimisticClientId = `${session.sessionKind}:${session.sessionId}:${optimisticIdRef.current}`
     const optimisticMessage = createOptimisticSessionMessage({
       prompt,
       clientId: optimisticClientId,
+      attachments: continueAttachments,
     })
 
     setOptimisticMessages((currentMessages) => [...currentMessages, optimisticMessage])
@@ -626,6 +642,7 @@ function SessionConversationView({
     setContinueError(null)
     setLastReply(null)
     setContinuePrompt('')
+    clearAttachments()
 
     try {
       if (isGatewaySession) {
@@ -640,6 +657,7 @@ function SessionConversationView({
             content: prompt,
             conversation_id: `agent_${agentName}`,
             message_type: 'text',
+            attachments: continueAttachments,
             forward: true,
             sessionKey: session.sessionKey || undefined,
           }),
@@ -843,16 +861,64 @@ function SessionConversationView({
         </div>
       )}
 
-      {/* Continue session input — reply is appended to the transcript above
-          via onRefreshTranscript(); only show transient errors here so the
-          input row stays anchored to the bottom regardless of reply size. */}
-      <div className="border-t border-border/50 px-4 py-2">
-        {continueError && <div className="mb-1 text-xs text-red-400">{continueError}</div>}
+      {/* Continue session input */}
+      <div
+        className={`border-t border-border/50 px-4 py-2 ${isGatewaySession && isDragOver ? 'bg-primary/5 ring-1 ring-primary/40' : ''}`}
+        onDragOver={isGatewaySession ? handleDragOver : undefined}
+        onDragLeave={isGatewaySession ? handleDragLeave : undefined}
+        onDrop={isGatewaySession ? handleDrop : undefined}
+      >
+        {isGatewaySession && continueAttachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {continueAttachments.map((attachment, index) => (
+              <div key={`${attachment.name}-${index}`} className="relative overflow-hidden rounded-md border border-border/60 bg-surface-1">
+                <ChatImagePreview
+                  src={attachment.dataUrl || attachment.url || ''}
+                  alt={attachment.name}
+                  caption={attachment.name}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(index)}
+                  className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-[10px] text-white/90 hover:bg-red-500/80"
+                >
+                  x
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <span className={`font-mono-tight text-xs ${isGatewaySession ? 'text-cyan-400/60' : 'text-green-400/60'}`}>{isGatewaySession ? '>' : '$'}</span>
+          {isGatewaySession && (
+            <>
+              <Button
+                onClick={() => fileInputRef.current?.click()}
+                size="sm"
+                variant="ghost"
+                disabled={continueBusy}
+                className="h-7 px-2 text-xs"
+                title="Attach image"
+              >
+                +
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) addFiles(event.target.files)
+                  event.target.value = ''
+                }}
+              />
+            </>
+          )}
           <input
             value={continuePrompt}
             onChange={(e) => setContinuePrompt(e.target.value)}
+            onPaste={isGatewaySession ? handlePaste : undefined}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -866,7 +932,7 @@ function SessionConversationView({
             onClick={handleContinueSession}
             size="sm"
             variant="ghost"
-            disabled={continueBusy || !continuePrompt.trim()}
+            disabled={continueBusy || (!continuePrompt.trim() && continueAttachments.length === 0)}
             className="h-7 px-3 text-xs"
           >
             {continueBusy ? '...' : 'Send'}

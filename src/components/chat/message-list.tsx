@@ -107,6 +107,7 @@ export function MessageList() {
           content: msg.content,
           conversation_id: msg.conversation_id,
           message_type: msg.message_type,
+          attachments: msg.attachments,
           forward: true,
         }),
       })
